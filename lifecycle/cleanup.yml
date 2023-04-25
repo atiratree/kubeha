@@ -1,0 +1,26 @@
+---
+- name: Cleanup and free cluster resoures
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Destroy masters, workers and dns machines
+      command: virsh destroy {{ item }}
+      register: result
+      failed_when:
+        - result.rc != 0
+        - '"failed to get domain" not in result.stderr'
+      loop: "{{ groups.masters + groups.workers + groups.dns }}"
+    - name: Undefine masters, workers and dns machines
+      command: virsh undefine {{ item }} --remove-all-storage
+      register: result
+      failed_when:
+        - result.rc != 0
+        - '"failed to get domain" not in result.stderr'
+      loop: "{{ groups.masters + groups.workers + groups.dns }}"
+    - name: Remove ssh keys
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - auth/id_rsa
+        - auth/id_rsa.pub

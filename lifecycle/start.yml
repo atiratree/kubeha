@@ -1,0 +1,33 @@
+---
+- name: Start DNS servers
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Start DNS servers
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: running
+      loop: "{{ groups.dns }}"
+- name: Wait for DNS servers to come up
+  hosts: dns
+  gather_facts: no
+  tasks:
+    - name: Wait 120 seconds for a host to come up
+      wait_for_connection:
+        timeout: 120
+- name: Start masters and workers
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Start masters and workers
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: running
+      loop: "{{ groups.masters + groups.workers }}"
+- name: Wait for masters and workers to come up
+  hosts: masters:workers
+  gather_facts: no
+  tasks:
+    - name: Wait 120 seconds for a host to come up
+      wait_for_connection:
+        timeout: 120

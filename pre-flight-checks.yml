@@ -1,0 +1,15 @@
+---
+- import_playbook: lifecycle/start.yml
+# TODO: currently manual only: add programmatic check for conflicting uuids and mac addresses
+# There does not seem to be a conflict when cloning VMs in a virt-manager
+- name: Pre-checks
+  hosts: dns:masters:workers
+  tasks:
+    - name: check product uuid
+      command: dmidecode -s system-uuid
+      register: product_uuid
+    - debug:
+        msg: "check that UUID varies: {{ product_uuid.stdout }}"
+    - debug:
+        msg: "check that IP and MAC address varies: {{ ansible_facts[item]['macaddress'] }}"
+      loop: "{{ ansible_interfaces | reject('equalto', 'lo') }}"

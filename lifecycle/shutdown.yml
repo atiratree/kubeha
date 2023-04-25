@@ -1,0 +1,44 @@
+---
+- name: Shut down cluster
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Shut down workers
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: shutdown
+      loop: "{{ groups.workers }}"
+    - name: Wait for workers to shut down
+      community.libvirt.virt:
+        command: list_vms
+        state: running
+      register: running_vms
+      until: running_vms.list_vms | intersect(groups.workers) | length == 0
+      retries: 120
+      delay: 5
+    - name: Shut down masters
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: shutdown
+      loop: "{{ groups.masters }}"
+    - name: Wait for masters to shut down
+      community.libvirt.virt:
+        command: list_vms
+        state: running
+      register: running_vms
+      until: running_vms.list_vms | intersect(groups.masters) | length == 0
+      retries: 120
+      delay: 5
+    - name: Shut down DNS servers
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: shutdown
+      loop: "{{ groups.dns }}"
+    - name: Wait for DNS servers to shut down
+      community.libvirt.virt:
+        command: list_vms
+        state: running
+      register: running_vms
+      until: running_vms.list_vms | intersect(groups.dns) | length == 0
+      retries: 120
+      delay: 5
