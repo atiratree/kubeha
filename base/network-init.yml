@@ -1,0 +1,18 @@
+---
+- name: Define a network
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Define kubeha network
+      community.libvirt.virt_net:
+        command: define
+        name: kubeha
+        xml: '{{ lookup("file", "kubeha-network.xml") }}'
+    - name: Ensure kubeha network is active
+      community.libvirt.virt_net:
+        state: active
+        name: kubeha
+    - name: Ensure that a kubeha network will be started at boot
+      community.libvirt.virt_net:
+        autostart: yes
+        name: kubeha

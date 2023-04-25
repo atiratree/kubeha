@@ -1,0 +1,17 @@
+[base]
+fedora-rawhide-base ansible_host=192.168.150.xxx
+
+[dns]
+fedora-rawhide-dns1 ansible_host=192.168.150.xxx
+fedora-rawhide-dns2 ansible_host=192.168.150.xxx
+
+[api]
+api-kube ansible_host=192.168.150.2
+
+[masters]
+fedora-rawhide-master1 ansible_host=192.168.150.xxx
+fedora-rawhide-master2 ansible_host=192.168.150.xxx
+fedora-rawhide-master3 ansible_host=192.168.150.xxx
+
+[workers]
+fedora-rawhide-worker1 ansible_host=192.168.150.xxx
