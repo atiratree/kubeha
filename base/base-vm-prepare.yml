@@ -1,0 +1,51 @@
+---
+- name: Start base VM
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Start base VM
+      community.libvirt.virt:
+        name: "{{ groups.base | first }}"
+        state: running
+- name: Prepare base VM
+  hosts: base
+  gather_facts: no
+  tasks:
+    - name: Wait 120 seconds for a host to come up
+      wait_for_connection:
+        timeout: 120
+    - name: Set grub timeout to 0
+      lineinfile:
+        path: /etc/default/grub
+        regexp: '^GRUB_TIMEOUT='
+        line: 'GRUB_TIMEOUT=0'
+    - name: Regenerate grub.cfg
+      command: grub2-mkconfig -o /boot/grub2/grub.cfg
+    - name: Turn off swap
+      copy:
+        content: ""
+        dest: /etc/systemd/zram-generator.conf
+        mode: 0555
+    - name: Install [qemu-guest-agent]
+      dnf:
+        name: qemu-guest-agent
+        state: latest
+    - name: Start/enable qemu-guest-agent
+      systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+    - name: Clean dnf
+      command: dnf clean all
+    - name: Delete cache files
+      file:
+        path: /var/cache/dnf
+        state: absent
+- name: Stop base VM
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Stop base VM
+      community.libvirt.virt:
+        name: "{{ groups.base | first }}"
+        state: shutdown

@@ -1,0 +1,15 @@
+---
+- name: Start base VM
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Generate an OpenSSH keypair with the default values (4096 bits, rsa)
+      community.crypto.openssh_keypair:
+        path: ../auth/id_rsa
+    - name: Generate VRRP password
+      set_fact:
+        vrrp_password: "{{ lookup('password', '../auth/vrrp_password', length=8) }}"
+    - name: Start base VM
+      community.libvirt.virt:
+        name: "{{ groups.base | first }}"
+        state: running
