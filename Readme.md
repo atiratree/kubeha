@@ -5,7 +5,7 @@ Simple opinionated high availability kubernetes cluster deployed in libvirt
 # Creating the cluster
 
 1. Install ansible requirements: `ansible-galaxy collection install -r requirements.yml`
-2. Create `kubeha` network with `ansible-playbook network-init.yml`
+2. Create `kubeha` network with `ansible-playbook base/network-init.yml`
 3. Prepare base VM
     1. Install fedora rawhide and name it fedora-rawhide-base. Select `kubeha` network as a source of the VM's NIC. 
     2. Input the base VM name and IP address into `hosts` file

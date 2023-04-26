@@ -1,0 +1,209 @@
+---
+- name: Start DNS servers
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Start DNS servers
+      community.libvirt.virt:
+        name: "{{ item }}"
+        state: running
+      loop: "{{ groups.dns }}"
+- name: Wait for DNS servers to come up
+  hosts: dns
+  gather_facts: yes
+  vars:
+    main_interface: "{{ ansible_interfaces | select('match', '^en') | first }}"
+  tasks:
+    - name: Wait 120 seconds for a host to come up
+      wait_for_connection:
+        timeout: 120
+    - name: Set a hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+    - name: Update system
+      dnf:
+        name: "*"
+        state: latest
+    - name: disable systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: stopped
+        enabled: false
+    - name: Empty /etc/resolv.conf to reset systemd-resolved config
+      copy:
+        content: ""
+        dest: /etc/resolv.conf
+        mode: 0755
+    - name: Set Default DNS backend to NetworkManager
+      lineinfile:
+        path: /etc/NetworkManager/NetworkManager.conf
+        regexp: '^dns='
+        insertafter: '^[main]'
+        line: 'dns=default'
+    - name: Reboot to apply changes
+      reboot:
+    - name: Install bind
+      dnf:
+        name:
+          - bind
+          - bind-utils
+        state: latest
+    - name: Configure BIND for Internal Network
+      copy:
+        dest: "/etc/named.conf"
+        # https://www.server-world.info/en/note?os=Fedora_37&p=dns&f=1
+        content: |
+          //
+          // named.conf
+          //
+          // See /usr/share/doc/bind*/sample/ for example named configuration files.
+          //
+          
+          # add : set ACL entry for local network
+          acl internal-network {
+            192.168.150.0/24;
+          };
+
+          options {
+          	listen-on port 53 { any; };
+          	listen-on-v6 port 53 { any; };
+          	directory 	"/var/named";
+          	dump-file 	"/var/named/data/cache_dump.db";
+          	statistics-file "/var/named/data/named_stats.txt";
+          	memstatistics-file "/var/named/data/named_mem_stats.txt";
+          	secroots-file	"/var/named/data/named.secroots";
+          	recursing-file	"/var/named/data/named.recursing";
+            # add local network set on [acl] section above
+            # network range you allow to recive queries from hosts
+          	allow-query     { localhost; internal-network; };
+            # network range you allow to transfer zone files to clients
+            # add secondary DNS servers if it exist
+            allow-transfer  { localhost; };
+
+          	/* 
+          	 - If you are building an AUTHORITATIVE DNS server, do NOT enable recursion.
+          	 - If you are building a RECURSIVE (caching) DNS server, you need to enable 
+          	   recursion. 
+          	 - If your recursive DNS server has a public IP address, you MUST enable access 
+          	   control to limit queries to your legitimate users. Failing to do so will
+          	   cause your server to become part of large scale DNS amplification 
+          	   attacks. Implementing BCP38 within your network would greatly
+          	   reduce such attack surface 
+          	*/
+          	recursion yes;
+
+          	dnssec-validation yes;
+
+          	managed-keys-directory "/var/named/dynamic";
+          	geoip-directory "/usr/share/GeoIP";
+
+          	pid-file "/run/named/named.pid";
+          	session-keyfile "/run/named/session.key";
+
+          	/* https://fedoraproject.org/wiki/Changes/CryptoPolicy */
+          	include "/etc/crypto-policies/back-ends/bind.config";
+          };
+
+          logging {
+                  channel default_debug {
+                          file "data/named.run";
+                          severity dynamic;
+                  };
+          };
+
+          zone "." IN {
+          	type hint;
+          	file "named.ca";
+          };
+
+          include "/etc/named.rfc1912.zones";
+          include "/etc/named.root.key";
+
+          # add zones for your network and domain name
+          zone "kubeha.knet" IN {
+            type master;
+            file "kubeha.knet.zone";
+            allow-update { none; };
+          };
+          zone "150.168.192.in-addr.arpa" IN {
+            type master;
+            file "150.168.192.db";
+            allow-update { none; };
+          };
+    - name: use IPv4 only
+      lineinfile:
+        path: /etc/sysconfig/named
+        regexp: '^OPTIONS='
+        line: 'OPTIONS="-4"'
+    - name: Configure forward resolution for kubeha.knet.zone
+      copy:
+        dest: "/var/named/kubeha.knet.zone"
+        # https://www.server-world.info/en/note?os=Fedora_37&p=dns&f=3
+        content: |
+          
+          $TTL 86400
+          @   IN  SOA     {{ inventory_hostname }}.kubeha.knet. root.kubeha.knet. (
+                  2023040101  ;Serial
+                  3600        ;Refresh
+                  1800        ;Retry
+                  604800      ;Expire
+                  86400       ;Minimum TTL
+          )
+                  IN  NS      {{ inventory_hostname }}.kubeha.knet.
+                  IN  A       {{hostvars[inventory_hostname]['ansible_host'] }}
+                  IN  MX 10   {{ inventory_hostname }}.kubeha.knet.
+          
+          {% for host in groups.dns + groups.api + groups.masters + groups.workers %}
+          {{ host }}     IN  A       {{hostvars[host]['ansible_host']}}
+          {% endfor %}
+    - name: Configure reverse resolution for 150.168.192.db
+      copy:
+        dest: "/var/named/150.168.192.db"
+        # https://www.server-world.info/en/note?os=Fedora_37&p=dns&f=3
+        content: |
+  
+          $TTL 86400
+          @   IN  SOA     {{ inventory_hostname }}.kubeha.knet. root.kubeha.knet. (
+                  2023040101  ;Serial
+                  3600        ;Refresh
+                  1800        ;Retry
+                  604800      ;Expire
+                  86400       ;Minimum TTL
+          )
+                  IN  NS      {{ inventory_hostname }}.kubeha.knet.  
+          {% for host in groups.dns + groups.api + groups.masters + groups.workers %}
+          {{hostvars[host]['ansible_host'].split(".")[3]}}      IN  PTR     {{ host }}.kubeha.knet.
+          {% endfor %}
+    - name: Start/enable named (BIND)
+      systemd:
+        name: named
+        state: started
+        enabled: true
+    # https://www.server-world.info/en/note?os=Fedora_37&p=dns&f=4
+    - name: permit traffic in default zone for DNS
+      ansible.posix.firewalld:
+        service: dns
+        permanent: true
+        immediate: true
+        state: enabled
+    - name: Add itself as a IPv4 DNS server and ignore auto DNS addresses from dhcp
+      community.general.nmcli:
+        type: ethernet
+        conn_name: "{{ main_interface }}"
+        dns4:
+          - "{{ hostvars[inventory_hostname]['ansible_host'] }}"
+        dns4_ignore_auto: true
+        dns6_ignore_auto: true
+        state: present
+    - name: restart NetworkManager
+      systemd:
+        name: NetworkManager
+        state: restarted
+      register: restartnetworkmanager
+      changed_when: 'restartnetworkmanager.state != "started"'
+    - name: Test DNS resolution
+      # dig {{ item }}
+      command: "nslookup {{ item }}.kubeha.knet"
+      register: testdnsresolution
+      changed_when: 'testdnsresolution.rc != 0'
+      loop: '{{ groups.dns + groups.api + groups.masters + groups.workers }}'
