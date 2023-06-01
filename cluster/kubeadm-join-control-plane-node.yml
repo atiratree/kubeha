@@ -1,0 +1,12 @@
+---
+- name: Install Kubernetes (Join other control-plane nodes)
+  hosts: masters[1:]
+  vars_files:
+    - ../vars.yaml
+  tasks:
+  - block:
+    - name: Join other master control-plane nodes
+      command:
+        cmd: "kubeadm join api-kube.kubeha.knet:{{ apiserver_port_frontend }} --node-name={{ inventory_hostname }}.kubeha.knet --control-plane --token {{ hostvars[groups.masters[0]].kubeadm_token }} --discovery-token-ca-cert-hash {{ hostvars[groups.masters[0]].kubeadm_discovery_token }} --certificate-key {{ hostvars[groups.masters[0]].kubeadm_certificate_key }}"
+    when: not kcm_scheduler_with_ha_apiserver_connection
+  # join new nodes after the installation: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/#join-nodes

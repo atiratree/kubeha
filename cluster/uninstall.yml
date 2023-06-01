@@ -1,0 +1,11 @@
+---
+- import_playbook: stop-force.yml
+- name: Uninstall Kubernetes
+  hosts: workers:masters
+  tasks:
+  - name: Remove kubernetes
+    command:
+      cmd: "kubeadm reset --cleanup-tmp-dir -f"
+  - name: Remove images
+    command:
+      cmd: "crictl rmi  --all"

@@ -1,0 +1,8 @@
+apiserver_port_frontend: "8443"
+apiserver_port_backend: "6443"
+
+# WARNING: setting scheduler_with_ha_apiserver_connection to true might hurt during upgrades
+# (see https://kubernetes.io/releases/version-skew-policy/#kube-controller-manager-kube-scheduler-and-cloud-controller-manager)
+# overrides KCM and scheduler to use domain name instead of local API endpoint (upstream solution https://github.com/kubernetes/kubernetes/pull/94398)
+# https://github.com/kubernetes/kubeadm/issues/2271
+kcm_scheduler_with_ha_apiserver_connection: false

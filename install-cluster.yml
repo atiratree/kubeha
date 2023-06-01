@@ -1,0 +1,387 @@
+---
+- import_playbook: lifecycle/start.yml
+- name: Pre-flight checks
+  hosts: dns:masters:workers
+  tasks:
+    - name: check product uuid
+      command: dmidecode -s system-uuid
+      register: product_uuid
+    - name: Fail when system-uuid are not unique across all machines
+      vars:
+        uuids: "{{ ansible_play_hosts | map('extract', hostvars, 'product_uuid') | map(attribute='stdout') | list }}"
+      fail:
+        msg: "system-uuid are not unique across all machines {{ uuids }}"
+      run_once: yes
+      when: uuids | unique | length != uuids | length
+    - name: Fail when mac addresses are not unique across all machines
+      vars:
+        mac_addresses: >-
+          {%- set results = [] -%}
+          {%- for host in ansible_play_hosts -%}
+          {%-   for iface in hostvars[host].ansible_interfaces | reject('equalto', 'lo') -%}
+          {%-     set results = results.append(hostvars[host].ansible_facts[iface].macaddress) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {{ results }}
+      fail:
+        msg: "mac addresses are not unique across all machines {{ mac_addresses }}"
+      run_once: yes
+      when: mac_addresses | unique | length != mac_addresses | length
+# https://www.server-world.info/en/note?os=Fedora_37&p=kubernetes&f=1
+# https://kubernetes.io/docs/setup/production-environment/container-runtimes/
+- name: Change settings for system requirements
+  hosts: masters:workers
+  vars:
+    main_interface: "{{ ansible_interfaces | select('match', '^en') | first }}"
+    dns_ips: "{{ groups.dns | map('extract', hostvars, 'ansible_host') }}"
+  tasks:
+  - name: Set a hostname
+    hostname:
+      name: "{{ inventory_hostname }}"
+  - name: Forwarding IPv4 and letting iptables see bridged traffic (1)
+    copy:
+      dest: "/etc/sysctl.d/99-k8s-cri.conf"
+      content: |
+        net.bridge.bridge-nf-call-iptables=1
+        net.ipv4.ip_forward=1
+        net.bridge.bridge-nf-call-ip6tables=1
+  - name: Forwarding IPv4 and letting iptables see bridged traffic (2)
+    copy:
+      dest: "/etc/modules-load.d/k8s.conf"
+      content: |
+        overlay
+        br_netfilter
+  - name: Update system
+    dnf:
+      name: "*"
+      state: latest
+  - name: Install iptables-legacy
+    dnf:
+      name: iptables-legacy
+      state: latest
+  - name: Switch to iptables-legacy
+    community.general.alternatives:
+      name: iptables
+      path: /usr/sbin/iptables-legacy
+      link: /usr/sbin/iptables
+  - name: check kernel args
+    command: grubby --info=0
+    register: grubby_entry0
+    changed_when: False
+  - name: switch to Cgroup v1 (default is v2)
+    command: grubby --update-kernel ALL --args systemd.unified_cgroup_hierarchy=0
+    when: "'systemd.unified_cgroup_hierarchy=0' not in grubby_entry0.stdout"
+  - name: disable firewalld
+    systemd:
+      name: firewalld
+      state: stopped
+      enabled: false
+  - name: disable systemd-resolved
+    systemd:
+      name: systemd-resolved
+      state: stopped
+      enabled: false
+  - name: Empty /etc/resolv.conf to reset systemd-resolved config
+    copy:
+      content: ""
+      dest: /etc/resolv.conf
+      mode: 0755
+  - name: Set Default DNS backend to NetworkManager
+    lineinfile:
+      path: /etc/NetworkManager/NetworkManager.conf
+      regexp: '^dns='
+      insertafter: '^[main]'
+      line: 'dns=default'
+  - name: Add IPv4 DNS server addresses and ignore auto DNS addresses from dhcp
+    community.general.nmcli:
+      type: ethernet
+      conn_name: "{{ main_interface }}"
+      dns4: '{{ dns_ips }}'
+      dns4_ignore_auto: true
+      dns6_ignore_auto: true
+      state: present
+  - name: Reboot to apply changes
+    reboot:
+# https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/
+# https://github.com/kubernetes/kubeadm/blob/main/docs/ha-considerations.md
+- name: Install load balancing and load balancer failover for High Availability
+  hosts: masters
+  vars_files:
+    - vars.yaml
+  vars:
+    main_interface: "{{ ansible_interfaces | select('match', '^en') | first }}"
+    vrrp_instance_state: "{% if inventory_hostname == groups.masters[0] %}MASTER{% else %}BACKUP{% endif %}" # initially always make the master-1 the MASTER
+    vrrp_instance_priority: "101" # same priority for MASTER and BACKUP, so they do not switch back
+    vrrp_instance_vip_address: "{{ hostvars['api-kube']['ansible_host'] }}"
+    vrrp_instance_password: "{{ lookup('password', 'auth/vrrp_password', length=8) }}"
+  tasks:
+    - name: Test DNS resolution
+      command: "nslookup {{ item }}.kubeha.knet"
+      register: testdnsresolution
+      changed_when: 'testdnsresolution.rc != 0'
+      loop: '{{ groups.api }}'
+    - name: Install keepalived
+      dnf:
+        name: keepalived
+        state: latest
+    - name: Add user keepalived for running custom scripts by keepalived
+      user:
+        name: keepalived
+    - name: Enable selinux for keepalived to connect to all TCP ports
+      ansible.posix.seboolean:
+        name: keepalived_connect_any
+        state: true
+        persistent: true
+    - name: SELinux policy for keepalive script
+      copy:
+        dest: "/home/keepalived/keepalived-checkapiserver-script.te"
+        mode: "0700"
+        # https://selinuxproject.org/page/ObjectClassesPerms
+        content: |
+          module keepalived-checkapiserver-script 1.0;
+
+          require {
+            type keepalived_t;
+            type unreserved_port_t;
+            type user_home_dir_t;
+            type ifconfig_exec_t;
+            class tcp_socket { name_connect };
+            class dir { search };
+            class file { execute execute_no_trans map getattr open read };
+            class process { setcap };
+          }
+
+          #============= keepalived_t ==============
+          allow keepalived_t unreserved_port_t:tcp_socket name_connect;
+          allow keepalived_t user_home_dir_t:dir search;
+          allow keepalived_t ifconfig_exec_t:file { execute execute_no_trans map getattr open read };
+          allow keepalived_t self:process setcap;
+    - name: Apply SELinux policy for keepalive script
+      shell: |
+        set -e
+        checkmodule -m -M -o /home/keepalived/keepalived-checkapiserver-script.mod /home/keepalived/keepalived-checkapiserver-script.te
+        semodule_package --outfile /home/keepalived/keepalived-checkapiserver-script.pp --module /home/keepalived/keepalived-checkapiserver-script.mod
+        semodule -i /home/keepalived/keepalived-checkapiserver-script.pp
+        echo > /home/keepalived/keepalived-checkapiserver-script.installed_flag
+      args:
+        creates: /home/keepalived/keepalived-checkapiserver-script.installed_flag
+    - name: Create check_apiserver script
+      copy:
+        dest: "/etc/keepalived/check_apiserver.sh"
+        mode: "0700"
+        owner: keepalived
+        # https://github.com/kubernetes/kubeadm/blob/main/docs/ha-considerations.md#keepalived-configuration
+        content: |
+          #!/bin/sh
+
+          APISERVER_DEST_PORT={{ apiserver_port_frontend }}
+          APISERVER_VIP={{ vrrp_instance_vip_address }}
+
+          errorExit() {
+            echo "*** $*" 1>&2
+            exit 1
+          }
+
+          curl --silent --max-time 2 --insecure https://localhost:${APISERVER_DEST_PORT}/ -o /dev/null || errorExit "Error GET https://localhost:${APISERVER_DEST_PORT}/"
+          if ip addr | grep -Eq "inet\s+${APISERVER_VIP}"; then
+            curl --silent --max-time 2 --insecure https://${APISERVER_VIP}:${APISERVER_DEST_PORT}/ -o /dev/null || errorExit "Error GET https://${APISERVER_VIP}:${APISERVER_DEST_PORT}/"
+          fi
+    - name: Create keepalived configuration
+      copy:
+        dest: "/etc/keepalived/keepalived.conf"
+        # https://github.com/kubernetes/kubeadm/blob/main/docs/ha-considerations.md#keepalived-configuration
+        # https://www.keepalived.org/manpage.html
+        content: |
+          ! Configuration File for keepalived
+          global_defs {
+            script_user keepalived
+            enable_script_security
+          }
+
+          vrrp_script check_apiserver {
+            script "/etc/keepalived/check_apiserver.sh"
+            interval 3
+            weight -2
+            fall 10
+            rise 2
+          }
+
+          vrrp_instance VI_1 {
+              state {{ vrrp_instance_state }}
+              interface {{ main_interface }}
+              virtual_router_id 51
+              priority {{ vrrp_instance_priority }}
+              authentication {
+              auth_type PASS
+              auth_pass {{ vrrp_instance_password }}
+            }
+            virtual_ipaddress {
+              {{ vrrp_instance_vip_address }}
+            }
+            track_script {
+              check_apiserver
+            }
+          }
+    - name: Start/enable keepalived service to provide a virtual IP managed by a configurable health check to provide a failover for haproxy loadbalancer that will be running in each master node
+      systemd:
+        name: keepalived
+        state: restarted
+        enabled: true
+      register: restartkeepalived
+      changed_when: 'restartkeepalived.state != "started"'
+    - name: Install haproxy
+      dnf:
+        name: haproxy
+        state: latest
+    - name: Enable selinux for haproxy to connect to all TCP ports
+      ansible.posix.seboolean:
+        name: haproxy_connect_any
+        state: true
+        persistent: true
+    - name: Create haproxy configuration
+      copy:
+        dest: "/etc/haproxy/haproxy.cfg"
+        # https://github.com/kubernetes/kubeadm/blob/main/docs/ha-considerations.md#haproxy-configuration
+        # https://www.haproxy.com/documentation/hapee/latest/configuration/config-sections/backend/
+        # https://www.haproxy.com/blog/how-to-enable-health-checks-in-haproxy/
+        # https://www.server-world.info/en/note?os=Fedora_36&p=haproxy&f=1
+        content: |
+          #---------------------------------------------------------------------
+          # Global settings
+          #---------------------------------------------------------------------
+          global
+          log /dev/log local0
+          log /dev/log local1 notice
+          daemon
+
+          #---------------------------------------------------------------------
+          # common defaults that all the 'listen' and 'backend' sections will
+          # use if not designated in their block
+          #---------------------------------------------------------------------
+          defaults
+          mode                    http
+          log                     global
+          option                  httplog
+          option                  dontlognull
+          option http-server-close
+          option forwardfor       except 127.0.0.0/8
+          option                  redispatch
+          retries                 1
+          timeout http-request    10s
+          timeout queue           20s
+          timeout connect         5s
+          timeout client          86400s
+          timeout server          120s
+          timeout http-keep-alive 10s
+          timeout check           10s
+
+          #---------------------------------------------------------------------
+          # apiserver frontend which proxys to the control plane nodes
+          #---------------------------------------------------------------------
+          frontend apiserver
+          bind *:{{ apiserver_port_frontend }}
+          mode tcp
+          option tcplog
+          default_backend apiserver
+
+          #---------------------------------------------------------------------
+          # round robin balancing for apiserver
+          #---------------------------------------------------------------------
+          backend apiserver
+          option httpchk GET /healthz
+          http-check expect status 200
+          mode tcp
+          option ssl-hello-chk
+          balance     roundrobin
+          {% for host in groups['masters'] %}
+          server {{ host }} {{hostvars[host]['ansible_host']}}:{{ apiserver_port_backend }} check
+          {% endfor %}
+    - name: Start/enable haproxy service to provide roundrobin loadbalancing between apiservers
+      systemd:
+        name: haproxy
+        state: restarted
+        enabled: true
+      register: restarthaproxy
+      changed_when: 'restarthaproxy.state != "started"'
+- name: Install Kubernetes (prepare)
+  hosts: masters:workers
+  vars:
+    apiserver_port_frontend: "8443"
+    apiserver_port_backend: "6443"
+  tasks:
+  # https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/
+  # https://kubernetes.io/docs/concepts/cluster-administration/networking/
+  - name: Install iproute-tc, container-selinux, cri-o, kubernetes, CNI plugins
+    dnf:
+      name:
+        - iproute-tc
+        - container-selinux
+        - cri-o
+        - cri-tools
+        - kubernetes-kubeadm
+        - kubernetes-node
+        - kubernetes-client
+        - containernetworking-plugins
+      state: latest
+  # https://kubernetes.io/docs/setup/production-environment/container-runtimes/#cri-o
+  - name: Start/enable cri-o
+    systemd:
+      name: crio
+      state: started
+      enabled: true
+  - name: Kubelet configuration - address
+    lineinfile:
+      path: /etc/kubernetes/kubelet
+      regexp: 'KUBELET_ADDRESS='
+      line: 'KUBELET_ADDRESS="--address=0.0.0.0"'
+  - name: Kubelet configuration - port
+    lineinfile:
+      path: /etc/kubernetes/kubelet
+      regexp: 'KUBELET_PORT='
+      line: 'KUBELET_PORT="--port=10250"'
+  - name: Kubelet configuration - hostname
+    lineinfile:
+      path: /etc/kubernetes/kubelet
+      regexp: 'KUBELET_HOSTNAME='
+      line: 'KUBELET_HOSTNAME="--hostname-override={{ inventory_hostname }}.kubeha.knet"'
+  - name: Kubeadm configuration - KUBELET_EXTRA_ARGS
+    lineinfile:
+      path: /etc/systemd/system/kubelet.service.d/kubeadm.conf
+      regexp: 'Environment="KUBELET_EXTRA_ARGS='
+      line: 'Environment="KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --container-runtime-endpoint=unix:///var/run/crio/crio.sock"'
+  - name: Enable kubelet
+    systemd:
+      name: kubelet
+      enabled: true
+      daemon_reload: true
+  - name: Create SELinux policy
+    copy:
+      dest: "/root/k8s.te"
+      content: |
+        module k8s 1.0;
+
+        require {
+        type cgroup_t;
+        type iptables_t;
+        class dir ioctl;
+        }
+
+        #============= iptables_t ==============
+        allow iptables_t cgroup_t:dir ioctl;
+  - name: Apply SELinux policy for k8s
+    shell: |
+      set -e
+      checkmodule -m -M -o k8s.mod k8s.te
+      semodule_package --outfile k8s.pp --module k8s.mod
+      semodule -i k8s.pp
+      echo > /root/k8s.installed_flag
+    args:
+      creates: /root/k8s.installed_flag
+  - name: Set KUBECONFIG into masters bashrc
+    lineinfile:
+      path: /root/.bashrc
+      regexp: '^export KUBECONFIG='
+      line: 'export KUBECONFIG=/etc/kubernetes/admin.conf'
+    when: ansible_hostname in groups.masters
+# install kubernetes with kubeadm
+- import_playbook: cluster/install.yml

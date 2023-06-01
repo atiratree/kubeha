@@ -1,0 +1,54 @@
+---
+- name: Install Kubernetes (first control-plane node)
+  hosts: masters[0]
+  vars_files:
+    - ../vars.yaml
+  vars:
+    kubeadm_init_arguments_part_one: "--control-plane-endpoint=api-kube.kubeha.knet:{{ apiserver_port_frontend }} --apiserver-advertise-address={{ hostvars[inventory_hostname]['ansible_host'] }}"
+    kubeadm_init_arguments_part_two: " --apiserver-bind-port={{ apiserver_port_backend }}"
+  tasks:
+  - block:
+    # iterate over kubeadm phases, so we can customize KCM and scheduler kubeconfig bellow
+    - name: Initialize first master control-plane node (PHASE preflight)
+      command:
+        cmd: "kubeadm init phase preflight --cri-socket=unix:///var/run/crio/crio.sock"
+        creates: /etc/kubernetes/admin.conf
+    - name: Initialize first master control-plane node (PHASE certs all)
+      command:
+        cmd: "kubeadm init phase certs all {{ kubeadm_init_arguments_part_one }}"
+        creates: /etc/kubernetes/pki/ca.crt
+    - name: Initialize first master control-plane node (PHASE kubeconfig controller-manager)
+      command:
+        cmd: "kubeadm init phase kubeconfig controller-manager {{ kubeadm_init_arguments_part_one }} {{ kubeadm_init_arguments_part_two }}"
+        creates: /etc/kubernetes/controller-manager.conf
+    - name: Initialize first master control-plane node (PHASE kubeconfig scheduler)
+      command:
+        cmd: "kubeadm init phase kubeconfig scheduler {{ kubeadm_init_arguments_part_one }} {{ kubeadm_init_arguments_part_two }}"
+        creates: /etc/kubernetes/scheduler.conf
+    # WARNING: this might hurt during upgrades (see https://kubernetes.io/releases/version-skew-policy/#kube-controller-manager-kube-scheduler-and-cloud-controller-manager)
+    # overrides KCM and scheduler to use domain name instead of local API endpoint (upstream solution https://github.com/kubernetes/kubernetes/pull/94398)
+    # https://github.com/kubernetes/kubeadm/issues/2271
+    - name: patch KCM and scheduler server to use domain name instead of local API endpoint
+      replace:
+        path: '{{ item }}'
+        regexp: 'server:.*'
+        replace: 'server: https://api-kube.kubeha.knet:{{ apiserver_port_frontend }}'
+      with_items:
+        - /etc/kubernetes/controller-manager.conf
+        - /etc/kubernetes/scheduler.conf
+    - name: Initialize first master control-plane node
+      command:
+        cmd: "kubeadm init {{ kubeadm_init_arguments_part_one }} {{ kubeadm_init_arguments_part_two }} --pod-network-cidr=10.0.0.0/8 --node-name={{ inventory_hostname }}.kubeha.knet --cri-socket=unix:///var/run/crio/crio.sock --upload-certs"
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadmjoincommands_result
+    - name: Store join commands
+      set_fact:
+        kubeadm_token: "{{  kubeadmjoincommands_result.stdout | regex_search('(?<=--token\\s)\\s*[^\\s]+') }}"
+        kubeadm_discovery_token:  "{{ kubeadmjoincommands_result.stdout | regex_search('(?<=--discovery-token-ca-cert-hash\\s)\\s*[^\\s]+') }}"
+        kubeadm_certificate_key:  "{{ kubeadmjoincommands_result.stdout | regex_search('(?<=--certificate-key\\s)\\s*[^\\s]+') }}"
+    - name: copy KUBECONFIG to local ./auth
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: ../auth/kubeconfig
+        flat: true
+    when: kcm_scheduler_with_ha_apiserver_connection

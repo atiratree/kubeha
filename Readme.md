@@ -1,6 +1,8 @@
 # kubeha
 
-Simple opinionated high availability kubernetes cluster deployed in libvirt
+Simple opinionated high availability kubernetes cluster deployed in libvirt. 
+
+APIServer connections can be  made highly available for kube-controller-manager and scheduler as well and can be toggled with `kcm_scheduler_with_ha_apiserver_connection` variable in `vars.yaml` (WARNING: setting to true can cause problems with upgrades).
 
 # Creating the cluster
 
@@ -15,7 +17,8 @@ Simple opinionated high availability kubernetes cluster deployed in libvirt
 4. Clone fedora-rawhide-base into as many masters and workers as desired via `virt-manager`
 5. Start all the VMs to obtain generated IP addresses
 6. Insert the VM names and IP addresses into `hosts` file
-7. Run optional pre-flight checks to see if there are any duplicities in VMs: `ansible-playbook pre-flight-checks.yml`
+7. Inspect vars.yaml for any customization
 8. Install DNS servers: `ansible-playbook install-dns.yml`
-9. [TBD] Install the cluster: `ansible-playbook install-cluster.yml`
+9. Install the cluster: `ansible-playbook install-cluster.yml`
 10. Either add `dns` group IPs from `./hosts` file as your DNS server or add the following entry to your hosts file: `echo '192.168.150.2 api-kube.kubeha.knet' >> /etc/hosts` 
+11. Use ./lifecycle and ./cluster scripts for management of the cluster

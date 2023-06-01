@@ -1,0 +1,27 @@
+---
+- name: Install Kubernetes (first control-plane node)
+  hosts: masters[0]
+  vars_files:
+    - ../vars.yaml
+  tasks:
+  - block:
+    # https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/#steps-for-the-first-control-plane-node
+    # https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/
+    # https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-init/
+    # https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/control-plane-flags/
+    - name: Initialize first master control-plane node
+      command:
+        cmd: "kubeadm init --control-plane-endpoint=api-kube.kubeha.knet:{{ apiserver_port_frontend }} --apiserver-advertise-address={{ hostvars[inventory_hostname]['ansible_host'] }} --apiserver-bind-port={{ apiserver_port_backend }} --pod-network-cidr=10.0.0.0/8 --node-name={{ inventory_hostname }}.kubeha.knet --cri-socket=unix:///var/run/crio/crio.sock --upload-certs"
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadmjoincommands_result
+    - name: Store join commands
+      set_fact:
+        kubeadm_token: "{{  kubeadmjoincommands_result.stdout | regex_search('(?<=--token\\s)\\s*[^\\s]+') }}"
+        kubeadm_discovery_token:  "{{ kubeadmjoincommands_result.stdout | regex_search('(?<=--discovery-token-ca-cert-hash\\s)\\s*[^\\s]+') }}"
+        kubeadm_certificate_key:  "{{ kubeadmjoincommands_result.stdout | regex_search('(?<=--certificate-key\\s)\\s*[^\\s]+') }}"
+    - name: copy KUBECONFIG to local ./auth
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: ../auth/kubeconfig
+        flat: true
+    when: not kcm_scheduler_with_ha_apiserver_connection

@@ -1,0 +1,9 @@
+---
+- name: Start Kubernetes
+  hosts: workers:masters
+  tasks:
+  - name: Start kubelet service
+    systemd:
+      name: kubelet
+      state: started
+      enabled: true

@@ -1,4 +1,5 @@
 ---
+- import_playbook: ../cluster/stop-force.yml
 - name: Shut down cluster
   hosts: localhost
   gather_facts: no

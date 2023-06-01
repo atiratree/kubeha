@@ -1,0 +1,10 @@
+---
+- name: Install Kubernetes (Join worker nodes)
+  hosts: workers
+  vars_files:
+    - ../vars.yaml
+  tasks:
+    - name: Join worker nodes
+      command:
+        cmd: "kubeadm join api-kube.kubeha.knet:{{ apiserver_port_frontend }} --node-name={{ inventory_hostname }}.kubeha.knet --token {{ hostvars[groups.masters[0]].kubeadm_token }} --discovery-token-ca-cert-hash {{ hostvars[groups.masters[0]].kubeadm_discovery_token }}"
+        creates: /etc/kubernetes/pki/ca.crt

@@ -1,0 +1,13 @@
+---
+- name: Pre pull kubeadm images
+  hosts: masters:workers
+  tasks:
+  - name: pre pull kubeadm images
+    command:
+      cmd: "kubeadm config images pull"
+# following picked according to kcm_scheduler_with_ha_apiserver_connection variable in ../vars.yaml
+- import_playbook: kubeadm-init.yml
+- import_playbook: kubeadm-init-kcm-scheduler-with-ha-apiserver-connection.yml
+- import_playbook: kubeadm-join-control-plane-node.yml
+- import_playbook: kubeadm-join-control-plane-node-kcm-scheduler-with-ha-apiserver-connection.yml
+- import_playbook: kubeadm-join-worker-node.yml

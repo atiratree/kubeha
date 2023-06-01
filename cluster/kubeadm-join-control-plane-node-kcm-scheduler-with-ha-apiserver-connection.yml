@@ -1,0 +1,34 @@
+---
+- name: Install Kubernetes (Join other control-plane nodes)
+  hosts: masters[1:]
+  vars_files:
+    - ../vars.yaml
+  vars:
+    kubeadm_join_arguments_part_one: "--token {{ hostvars[groups.masters[0]].kubeadm_token }} --discovery-token-ca-cert-hash {{ hostvars[groups.masters[0]].kubeadm_discovery_token }}"
+    kubeadm_join_arguments_part_two: "--certificate-key {{ hostvars[groups.masters[0]].kubeadm_certificate_key }}"
+  tasks:
+  - block:
+    # iterate over kubeadm phases, so we can customize KCM and scheduler kubeconfig bellow
+    - name: Join other master control-plane nodes (PHASE preflight)
+      command:
+        cmd: "kubeadm join phase preflight api-kube.kubeha.knet:{{ apiserver_port_frontend }} --node-name={{ inventory_hostname }}.kubeha.knet --control-plane {{ kubeadm_join_arguments_part_one }} {{ kubeadm_join_arguments_part_two }}"
+        creates: /etc/kubernetes/admin.conf
+    - name: Join other master control-plane nodes (PHASE control-plane-prepare all)
+      command:
+        cmd: "kubeadm join phase control-plane-prepare all api-kube.kubeha.knet:{{ apiserver_port_frontend }} --node-name={{ inventory_hostname }}.kubeha.knet --control-plane {{ kubeadm_join_arguments_part_one }}  {{ kubeadm_join_arguments_part_two }}"
+        creates: /etc/kubernetes/admin.conf
+    - name: patch KCM and scheduler server to use domain name instead of local API endpoint
+      replace:
+        path: '{{ item }}'
+        regexp: 'server:.*'
+        replace: 'server: https://api-kube.kubeha.knet:{{ apiserver_port_frontend }}'
+      with_items:
+        - /etc/kubernetes/controller-manager.conf
+        - /etc/kubernetes/scheduler.conf
+    - name: Join other master control-plane nodes (PHASE kubelet-start)
+      command:
+        cmd: "kubeadm join phase kubelet-start api-kube.kubeha.knet:{{ apiserver_port_frontend }} --node-name={{ inventory_hostname }}.kubeha.knet {{ kubeadm_join_arguments_part_one }}"
+    - name: Join other master control-plane nodes (PHASE control-plane-join all)
+      command:
+        cmd: "kubeadm join phase control-plane-join all --node-name={{ inventory_hostname }}.kubeha.knet --control-plane"
+    when: kcm_scheduler_with_ha_apiserver_connection

@@ -1,0 +1,17 @@
+---
+- name: Stop Kubernetes force, without draining applications
+  hosts: workers:masters
+  tasks:
+  - name: Stop kubelet service
+    systemd:
+      name: kubelet
+      state: stopped
+      enabled: true
+  - name: Stop all pods/containers
+    shell: |
+      set -e
+      crictl stopp $(crictl pods -q)
+    register: stop_out
+    retries: 60
+    delay: 1
+    until: stop_out.rc == 0
