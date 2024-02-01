@@ -1,0 +1,100 @@
+---
+- name: Upgrade / Downgrade Kubernetes
+  hosts: masters:workers
+  serial: 1
+  vars_files:
+    - ../vars.yaml
+  vars:
+    k8s_version_major_minor: "{{ k8s_version | regex_search('^[0-9]\\.[0-9]+')}}"
+    kubeadm_upgrade_sub_cmd_force_options: "{% if force_upgrade_downgrade %}--ignore-preflight-errors=all{% else %}{% endif %}"
+    kubeadm_upgrade_sub_cmd_force_options_master1: "{% if force_upgrade_downgrade %}--force{% else %}{% endif %}"
+    kubeadm_upgrade_sub_cmd: "{% if inventory_hostname == groups.masters[0] %}apply {{ k8s_version }} --yes {{ kubeadm_upgrade_sub_cmd_force_options_master1 }}{% else %}node{% endif %}" # master-1 should be run with "apply", the rest with "node"
+  tasks:
+  - block:
+      - name: Ensure temp kubeconfig for workers
+        copy:
+          src: "../auth/kubeconfig"
+          dest: "/etc/kubernetes/admin.conf"
+        when: ansible_hostname in groups.workers
+      - name: kubectl drain --ignore-daemonsets --timeout=5m
+        command:
+          cmd: "kubectl drain --kubeconfig=/etc/kubernetes/admin.conf --ignore-daemonsets --delete-emptydir-data --force --timeout=5m {{ inventory_hostname }}.kubeha.knet"
+        register: out
+      - debug: var=out.stdout_lines
+      - name: Remove latest kubernetes-* packages in favor of the {{ k8s_version_major_minor }} repo ones if they still exist
+        dnf:
+          name:
+            - kubernetes-kubeadm
+            - kubernetes-node
+            - kubernetes-client
+          autoremove: true
+          state: absent
+      # https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/change-package-repository/
+      - name: Add repo for kubernetes packages ({{ k8s_version_major_minor }})
+        copy:
+          dest: "/etc/yum.repos.d/kubernetes.repo"
+          content: |
+            [kubernetes]
+            name=Kubernetes
+            baseurl=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version_major_minor }}/rpm/
+            enabled=1
+            gpgcheck=1
+            gpgkey=https://pkgs.k8s.io/core:/stable:/v{{ k8s_version_major_minor }}/rpm/repodata/repomd.xml.key
+            exclude=kubelet kubeadm kubectl
+      - name: Obtain full package version for {{ k8s_version }}
+        shell: |
+          dnf --showduplicates list kubeadm --disableexcludes=kubernetes | grep -o "{{ k8s_version }}[0-9.-]*" | tail -1
+        register: k8s_version_package_obj
+      - name: Update kubeadm package ({{ k8s_version_package_obj.stdout }})
+        dnf:
+          name:
+            - kubeadm-{{ k8s_version_package_obj.stdout }}
+          state: latest
+          disable_excludes: kubernetes
+      - name: Start kubelet service if not running
+        systemd:
+          name: kubelet
+          state: started
+          enabled: true
+      - name: Wait for 5s for kubelet to be running
+        pause:
+          seconds: 5
+      # https://v1-26.docs.kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+      - name: kubeadm upgrade {{ kubeadm_upgrade_sub_cmd }} {{ kubeadm_upgrade_sub_cmd_force_options }}
+        shell: |
+          #!/bin/env bash
+          kubeadm upgrade {{ kubeadm_upgrade_sub_cmd }} {{ kubeadm_upgrade_sub_cmd_force_options }} 2>&1 | tee /tmp/kubeadm_upgrade.log
+          exit_code="${PIPESTATUS[0]}"
+          if [[ "{{ force_upgrade_downgrade }}" == "True" ]]; then
+            if cat /tmp/kubeadm_upgrade.log | grep -q "FATAL post-upgrade error"; then
+              # ignore post-upgrade errors
+              exit 0
+            fi
+          fi
+          exit $exit_code
+        register: out
+      - debug: var=out.stdout_lines
+      - name: Update kubelet and kubectl packages ({{ k8s_version_package_obj.stdout }})
+        dnf:
+          name:
+            - kubelet-{{ k8s_version_package_obj.stdout }}
+            - kubectl-{{ k8s_version_package_obj.stdout }}
+          state: latest
+          disable_excludes: kubernetes
+      - name: Restart kubelet service
+        systemd:
+          name: kubelet
+          daemon_reload: true
+          state: restarted
+          enabled: true
+      - name: Make node schedulable again - kubectl uncordon
+        command:
+          cmd: "kubectl uncordon --kubeconfig=/etc/kubernetes/admin.conf {{ inventory_hostname }}.kubeha.knet"
+        register: out
+      - debug: var=out.stdout_lines
+    always:
+      - name: Delete temp kubeconfig for workers
+        file:
+          path: "/etc/kubernetes/admin.conf"
+          state: absent
+        when: ansible_hostname in groups.workers
