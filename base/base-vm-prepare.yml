@@ -14,6 +14,11 @@
     - name: Wait 120 seconds for a host to come up
       wait_for_connection:
         timeout: 120
+    - name: Enable sshd
+      systemd:
+        name: sshd
+        state: started
+        enabled: true
     - name: Set grub timeout to 0
       lineinfile:
         path: /etc/default/grub

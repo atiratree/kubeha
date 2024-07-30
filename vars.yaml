@@ -7,5 +7,5 @@ apiserver_port_backend: "6443"
 # https://github.com/kubernetes/kubeadm/issues/2271
 kcm_scheduler_with_ha_apiserver_connection: false
 
-k8s_version: "1.29.1"
+k8s_version: "1.29.7"
 force_upgrade_downgrade: false
