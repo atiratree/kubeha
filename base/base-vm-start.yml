@@ -3,6 +3,11 @@
   hosts: localhost
   gather_facts: no
   tasks:
+    - name: Create an auth directory
+      file:
+        path: ../auth
+        state: directory
+        mode: '0755'
     - name: Generate an OpenSSH keypair with the default values (4096 bits, rsa)
       community.crypto.openssh_keypair:
         path: ../auth/id_rsa

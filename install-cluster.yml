@@ -27,7 +27,7 @@
         msg: "mac addresses are not unique across all machines {{ mac_addresses }}"
       run_once: yes
       when: mac_addresses | unique | length != mac_addresses | length
-# https://www.server-world.info/en/note?os=Fedora_37&p=kubernetes&f=1
+# https://www.server-world.info/en/note?os=Fedora_40&p=kubernetes&f=1
 # https://kubernetes.io/docs/setup/production-environment/container-runtimes/
 - name: Change settings for system requirements
   hosts: masters:workers
@@ -68,9 +68,6 @@
     command: grubby --info=0
     register: grubby_entry0
     changed_when: False
-  - name: switch to Cgroup v1 (default is v2)
-    command: grubby --update-kernel ALL --args systemd.unified_cgroup_hierarchy=0
-    when: "'systemd.unified_cgroup_hierarchy=0' not in grubby_entry0.stdout"
   - name: disable firewalld
     systemd:
       name: firewalld
@@ -244,7 +241,7 @@
         # https://github.com/kubernetes/kubeadm/blob/main/docs/ha-considerations.md#haproxy-configuration
         # https://www.haproxy.com/documentation/hapee/latest/configuration/config-sections/backend/
         # https://www.haproxy.com/blog/how-to-enable-health-checks-in-haproxy/
-        # https://www.server-world.info/en/note?os=Fedora_36&p=haproxy&f=1
+        # https://www.server-world.info/en/note?os=Fedora_40&p=haproxy&f=1
         content: |
           #---------------------------------------------------------------------
           # Global settings
@@ -344,11 +341,6 @@
       path: /etc/kubernetes/kubelet
       regexp: 'KUBELET_HOSTNAME='
       line: 'KUBELET_HOSTNAME="--hostname-override={{ inventory_hostname }}.kubeha.knet"'
-  - name: Kubeadm configuration - KUBELET_EXTRA_ARGS
-    lineinfile:
-      path: /etc/systemd/system/kubelet.service.d/kubeadm.conf
-      regexp: 'Environment="KUBELET_EXTRA_ARGS='
-      line: 'Environment="KUBELET_EXTRA_ARGS=--cgroup-driver=systemd --container-runtime-endpoint=unix:///var/run/crio/crio.sock"'
   - name: Enable kubelet
     systemd:
       name: kubelet
